@@ -431,6 +431,7 @@ from open_webui.config import (
     OAUTH_USERNAME_CLAIM,
     OAUTH_ALLOWED_ROLES,
     OAUTH_ADMIN_ROLES,
+    ONEAI_LOGIN_ONLY,
     # WebUI (LDAP)
     ENABLE_LDAP,
     LDAP_SERVER_LABEL,
@@ -951,6 +952,7 @@ app.state.config.ENABLE_OAUTH_ROLE_MANAGEMENT = ENABLE_OAUTH_ROLE_MANAGEMENT
 app.state.config.OAUTH_ROLES_CLAIM = OAUTH_ROLES_CLAIM
 app.state.config.OAUTH_ALLOWED_ROLES = OAUTH_ALLOWED_ROLES
 app.state.config.OAUTH_ADMIN_ROLES = OAUTH_ADMIN_ROLES
+app.state.config.ONEAI_LOGIN_ONLY = ONEAI_LOGIN_ONLY
 
 app.state.config.ENABLE_LDAP = ENABLE_LDAP
 app.state.config.LDAP_SERVER_LABEL = LDAP_SERVER_LABEL
@@ -1683,6 +1685,17 @@ async def chat_completion(
     model_item = form_data.pop('model_item', {})
     tasks = form_data.pop('background_tasks', None)
 
+    def is_allowed_unregistered_openai_model(model):
+        oneai_login_only = getattr(request.app.state.config, 'ONEAI_LOGIN_ONLY', False)
+        oneai_login_only = getattr(oneai_login_only, 'value', oneai_login_only)
+
+        return bool(
+            oneai_login_only
+            and model
+            and model.get('owned_by') == 'openai'
+            and not (model.get('info') or {}).get('user_id')
+        )
+
     metadata = {}
     try:
         model_info = None
@@ -1694,7 +1707,11 @@ async def chat_completion(
             model_info = await Models.get_model_by_id(model_id)
 
             # Check if user has access to the model
-            if not BYPASS_MODEL_ACCESS_CONTROL and (user.role != 'admin' or not BYPASS_ADMIN_ACCESS_CONTROL):
+            if (
+                not is_allowed_unregistered_openai_model(model)
+                and not BYPASS_MODEL_ACCESS_CONTROL
+                and (user.role != 'admin' or not BYPASS_ADMIN_ACCESS_CONTROL)
+            ):
                 try:
                     await check_model_access(user, model)
                 except Exception as e:
@@ -1975,7 +1992,12 @@ async def chat_completion(
         try:
             form_data, metadata, events = await process_chat_payload(request, form_data, user, metadata, model)
 
-            response = await chat_completion_handler(request, form_data, user)
+            response = await chat_completion_handler(
+                request,
+                form_data,
+                user,
+                bypass_filter=is_allowed_unregistered_openai_model(model),
+            )
 
             # When the upstream provider returns an error (e.g. HTTP 400
             # content-filter, quota exceeded), generate_chat_completion
@@ -2367,6 +2389,7 @@ async def get_app_config(request: Request):
             'enable_version_update_check': ENABLE_VERSION_UPDATE_CHECK,
             'enable_public_active_users_count': ENABLE_PUBLIC_ACTIVE_USERS_COUNT,
             'enable_easter_eggs': ENABLE_EASTER_EGGS,
+            'oneai_login_only': app.state.config.ONEAI_LOGIN_ONLY,
             **(
                 {
                     'enable_direct_connections': app.state.config.ENABLE_DIRECT_CONNECTIONS,

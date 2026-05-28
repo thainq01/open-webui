@@ -28,6 +28,7 @@ from open_webui.utils.access_control import has_access, has_base_model_access
 from open_webui.config import (
     BYPASS_ADMIN_ACCESS_CONTROL,
     DEFAULT_ARENA_MODEL,
+    ONEAI_LOGIN_ONLY,
 )
 
 from open_webui.env import BYPASS_MODEL_ACCESS_CONTROL, GLOBAL_LOG_LEVEL
@@ -398,6 +399,14 @@ async def check_model_access(user, model, db=None):
     else:
         model_info = await Models.get_model_by_id(model.get('id'), db=db)
         if not model_info:
+            allow_unregistered_openai_model = (
+                bool(getattr(ONEAI_LOGIN_ONLY, 'value', ONEAI_LOGIN_ONLY))
+                and model.get('owned_by') == 'openai'
+                and not (model.get('info') or {}).get('user_id')
+            )
+            if allow_unregistered_openai_model:
+                return
+
             raise Exception('Model not found')
         elif not (
             user.id == model_info.user_id
@@ -421,6 +430,10 @@ async def get_filtered_models(models, user, db=None):
     if (
         user.role == 'user' or (user.role == 'admin' and not BYPASS_ADMIN_ACCESS_CONTROL)
     ) and not BYPASS_MODEL_ACCESS_CONTROL:
+        allow_unregistered_openai_models = bool(
+            getattr(ONEAI_LOGIN_ONLY, 'value', ONEAI_LOGIN_ONLY)
+        )
+
         model_infos = {}
         for model in models:
             if model.get('arena'):
@@ -456,7 +469,15 @@ async def get_filtered_models(models, user, db=None):
                 continue
 
             model_info = model_infos.get(model['id'])
-            if model_info:
+            if (
+                allow_unregistered_openai_models
+                and model.get('owned_by') == 'openai'
+                and not (model_info or {}).get('user_id')
+            ):
+                # In OneAI login mode the upstream API key is user-scoped, and
+                # provider models commonly have no local Models row yet.
+                filtered_models.append(model)
+            elif model_info:
                 if (
                     (user.role == 'admin' and BYPASS_ADMIN_ACCESS_CONTROL)
                     or user.id == model_info.get('user_id')

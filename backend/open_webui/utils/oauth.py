@@ -67,6 +67,8 @@ from open_webui.config import (
     WEBHOOK_URL,
     JWT_EXPIRES_IN,
     AppConfig,
+    ONEAI_BASE_URL,
+    ONEAI_GATEWAY_URL,
 )
 from open_webui.constants import ERROR_MESSAGES, WEBHOOK_MESSAGES
 from open_webui.env import (
@@ -1742,6 +1744,17 @@ class OAuthManager:
                         status.HTTP_403_FORBIDDEN,
                         detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
                     )
+
+            # Fetch API key from OneAI userinfo response and update global config
+            if provider == 'oidc':
+                oneai_api_key = user_data.get('api_key')
+                log.info(f'OneAI api_key from userinfo: present={bool(oneai_api_key)}')
+                log.info(f'oneai_api_key {oneai_api_key}')
+
+                if oneai_api_key:
+                    oneai_url = f'{ONEAI_GATEWAY_URL}/v1'
+                    request.app.state.config.OPENAI_API_BASE_URLS = [oneai_url]
+                    request.app.state.config.OPENAI_API_KEYS = [oneai_api_key]
 
             jwt_token = create_token(
                 data={'id': user.id},

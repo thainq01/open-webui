@@ -1391,3 +1391,73 @@ async def token_exchange(
         )
 
     return await create_session_response(request, user, db)
+
+
+############################
+# Refresh OneAI API Key
+############################
+
+
+@router.post('/oneai/refresh-key')
+async def refresh_oneai_api_key(
+    request: Request,
+    user=Depends(get_verified_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    from open_webui.config import ONEAI_GATEWAY_URL
+
+    oauth_session = await OAuthSessions.get_session_by_provider_and_user_id('oidc', user.id, db=db)
+    if not oauth_session:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='No OAuth session found. Please log in again.',
+        )
+
+    access_token = oauth_session.token.get('access_token')
+    if not access_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail='No access token in OAuth session.',
+        )
+
+    oneai_api_key = None
+    try:
+        async with ClientSession(trust_env=True) as session:
+            async with session.get(
+                f'{ONEAI_GATEWAY_URL}/api/v1/keys',
+                headers={'Authorization': f'Bearer {access_token}'},
+                ssl=AIOHTTP_CLIENT_SESSION_SSL,
+            ) as resp:
+                if resp.ok:
+                    keys_data = await resp.json()
+                    items = keys_data.get('data', {}).get('items', [])
+                    for item in items:
+                        if item.get('status') == 'active':
+                            oneai_api_key = item.get('key')
+                            break
+                else:
+                    error_text = await resp.text()
+                    raise HTTPException(
+                        status_code=resp.status,
+                        detail=f'Failed to fetch key from gateway: {error_text}',
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f'Error connecting to gateway: {str(e)}',
+        )
+
+    if not oneai_api_key:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail='No active API key found in gateway.',
+        )
+
+    # Update global OPENAI_API config so backend can proxy requests
+    oneai_url = f'{ONEAI_GATEWAY_URL}/v1'
+    request.app.state.config.OPENAI_API_BASE_URLS = [oneai_url]
+    request.app.state.config.OPENAI_API_KEYS = [oneai_api_key]
+
+    return {'status': True}

@@ -585,6 +585,15 @@ OAUTH_CODE_CHALLENGE_METHOD = PersistentConfig(
     os.environ.get('OAUTH_CODE_CHALLENGE_METHOD', None),
 )
 
+ONEAI_LOGIN_ONLY = PersistentConfig(
+    'ONEAI_LOGIN_ONLY',
+    'oauth.oneai_login_only',
+    os.environ.get('ONEAI_LOGIN_ONLY', 'False').lower() == 'true',
+)
+
+ONEAI_BASE_URL = os.environ.get('ONEAI_BASE_URL', 'https://app.1hub.global').rstrip('/')
+ONEAI_GATEWAY_URL = os.environ.get('ONEAI_GATEWAY_URL', ONEAI_BASE_URL).rstrip('/')
+
 OAUTH_PROVIDER_NAME = PersistentConfig(
     'OAUTH_PROVIDER_NAME',
     'oauth.oidc.provider_name',
@@ -822,11 +831,7 @@ def load_oauth_providers():
             'sub_claim': 'id',
         }
 
-    if (
-        OAUTH_CLIENT_ID.value
-        and (OAUTH_CLIENT_SECRET.value or OAUTH_CODE_CHALLENGE_METHOD.value)
-        and OPENID_PROVIDER_URL.value
-    ):
+    if OAUTH_CLIENT_ID.value and (OAUTH_CLIENT_SECRET.value or OAUTH_CODE_CHALLENGE_METHOD.value):
 
         def oidc_oauth_register(oauth: OAuth):
             client_kwargs = {
@@ -834,7 +839,11 @@ def load_oauth_providers():
                 **(
                     {'token_endpoint_auth_method': OAUTH_TOKEN_ENDPOINT_AUTH_METHOD.value}
                     if OAUTH_TOKEN_ENDPOINT_AUTH_METHOD.value
-                    else {}
+                    else (
+                        {'token_endpoint_auth_method': 'client_secret_post'}
+                        if not OPENID_PROVIDER_URL.value
+                        else {}
+                    )
                 ),
                 **({'timeout': int(OAUTH_TIMEOUT.value)} if OAUTH_TIMEOUT.value else {}),
             }
@@ -847,14 +856,29 @@ def load_oauth_providers():
                     % ('S256', OAUTH_CODE_CHALLENGE_METHOD.value)
                 )
 
-            client = oauth.register(
-                name='oidc',
-                client_id=OAUTH_CLIENT_ID.value,
-                client_secret=OAUTH_CLIENT_SECRET.value,
-                server_metadata_url=OPENID_PROVIDER_URL.value,
-                client_kwargs=client_kwargs,
-                redirect_uri=OPENID_REDIRECT_URI.value,
-            )
+            if OPENID_PROVIDER_URL.value:
+                # Standard OIDC with discovery URL
+                client = oauth.register(
+                    name='oidc',
+                    client_id=OAUTH_CLIENT_ID.value,
+                    client_secret=OAUTH_CLIENT_SECRET.value,
+                    server_metadata_url=OPENID_PROVIDER_URL.value,
+                    client_kwargs=client_kwargs,
+                    redirect_uri=OPENID_REDIRECT_URI.value,
+                )
+            else:
+                # OneAI OAuth2 with explicit endpoints (no discovery URL)
+                client = oauth.register(
+                    name='oidc',
+                    client_id=OAUTH_CLIENT_ID.value,
+                    client_secret=OAUTH_CLIENT_SECRET.value,
+                    authorize_url=f'{ONEAI_BASE_URL}/api/v1/oauth2/authorize',
+                    access_token_url=f'{ONEAI_BASE_URL}/api/v1/oauth2/token',
+                    userinfo_endpoint=f'{ONEAI_BASE_URL}/api/v1/oauth2/userinfo',
+                    client_kwargs=client_kwargs,
+                    redirect_uri=OPENID_REDIRECT_URI.value,
+                    server_metadata={'redirect_uri': OPENID_REDIRECT_URI.value},
+                )
             return client
 
         OAUTH_PROVIDERS['oidc'] = {

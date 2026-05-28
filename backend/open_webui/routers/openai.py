@@ -31,6 +31,7 @@ from open_webui.models.groups import Groups
 from open_webui.utils.access_control import has_connection_access, check_model_access
 from open_webui.config import (
     CACHE_DIR,
+    ONEAI_LOGIN_ONLY,
 )
 from open_webui.env import (
     MODELS_CACHE_TTL,
@@ -102,7 +103,7 @@ async def send_get_request(
                 headers, cookies = await get_headers_and_cookies(request, url, key, config, user=user)
             else:
                 headers = {
-                    **({'Authorization': f'Bearer {key}'} if key else {}),
+                    **({'x-api-key': key} if key else {}),
                 }
                 cookies = None
 
@@ -183,10 +184,11 @@ async def get_headers_and_cookies(
 
     token = None
     auth_type = config.get('auth_type')
+    use_api_key_header = False
 
     if auth_type == 'bearer' or auth_type is None:
-        # Default to bearer if not specified
         token = f'{key}'
+        use_api_key_header = True
     elif auth_type == 'none':
         token = None
     elif auth_type == 'session':
@@ -212,7 +214,10 @@ async def get_headers_and_cookies(
         token = get_microsoft_entra_id_access_token()
 
     if token:
-        headers['Authorization'] = f'Bearer {token}'
+        if use_api_key_header:
+            headers['x-api-key'] = token
+        else:
+            headers['Authorization'] = f'Bearer {token}'
 
     if config.get('headers') and isinstance(config.get('headers'), dict):
         custom_headers = get_custom_headers(config.get('headers'), user, metadata)
@@ -377,6 +382,7 @@ async def get_all_models_responses(request: Request, user: UserModel) -> list:
     api_base_urls = request.app.state.config.OPENAI_API_BASE_URLS
     api_keys = list(request.app.state.config.OPENAI_API_KEYS)
     api_configs = request.app.state.config.OPENAI_API_CONFIGS
+    log.info(f'[DEBUG] get_all_models_responses: api_base_urls={api_base_urls}, api_keys={[k[:10] + "..." if k else "" for k in api_keys]}')
 
     # Check if API KEYS length is same than API URLS length
     num_urls = len(api_base_urls)
@@ -582,7 +588,7 @@ async def get_all_models(request: Request, user: UserModel) -> dict[str, list]:
                     if model_id and model_id not in models:
                         models[model_id] = {
                             **model,
-                            'name': model.get('name', model_id),
+                            'name': model.get('name') or model.get('display_name') or model_id,
                             'owned_by': 'openai',
                             'openai': model,
                             'connection_type': model.get('connection_type', 'external'),
@@ -1123,6 +1129,21 @@ async def generate_chat_completion(
 
         await check_model_access(user, model_info, bypass_filter)
     else:
+        models = request.app.state.OPENAI_MODELS
+        if not models or model_id not in models:
+            await get_all_models(request, user=user)
+            models = request.app.state.OPENAI_MODELS
+
+        model = models.get(model_id)
+        oneai_login_only = getattr(ONEAI_LOGIN_ONLY, 'value', ONEAI_LOGIN_ONLY)
+        if (
+            oneai_login_only
+            and model
+            and model.get('owned_by') == 'openai'
+            and not (model.get('info') or {}).get('user_id')
+        ):
+            bypass_filter = True
+
         await check_model_access(user, None, bypass_filter)
 
     # Check if model is already in app state cache to avoid expensive get_all_models() call

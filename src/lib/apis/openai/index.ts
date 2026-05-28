@@ -216,7 +216,7 @@ export const getOpenAIModelsDirect = async (url: string, key: string) => {
 		headers: {
 			Accept: 'application/json',
 			'Content-Type': 'application/json',
-			...(key && { authorization: `Bearer ${key}` })
+			...(key && { 'x-api-key': key })
 		}
 	})
 		.then(async (res) => {
@@ -338,12 +338,13 @@ export const chatCompletion = async (
 	const controller = new AbortController();
 	let error = null;
 
+	const isDirect = url !== `${WEBUI_BASE_URL}/api`;
 	const res = await fetch(`${url}/chat/completions`, {
 		signal: controller.signal,
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${token}`,
-			'Content-Type': 'application/json'
+			'Content-Type': 'application/json',
+			...(isDirect ? { 'x-api-key': token } : { Authorization: `Bearer ${token}` })
 		},
 		body: JSON.stringify(body)
 	}).catch((err) => {
@@ -366,11 +367,12 @@ export const generateOpenAIChatCompletion = async (
 ) => {
 	let error = null;
 
+	const isDirect = url !== `${WEBUI_BASE_URL}/api`;
 	const res = await fetch(`${url}/chat/completions`, {
 		method: 'POST',
 		headers: {
-			Authorization: `Bearer ${token}`,
-			'Content-Type': 'application/json'
+			'Content-Type': 'application/json',
+			...(isDirect ? { 'x-api-key': token } : { Authorization: `Bearer ${token}` })
 		},
 		credentials: 'include',
 		body: JSON.stringify(body)
